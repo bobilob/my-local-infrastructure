@@ -1,23 +1,34 @@
 terraform {
-  # Här talar vi om vilka externa plugins (providers) Terraform behöver ladda ner
   required_providers {
     kind = {
       source  = "tehcyx/kind"
       version = "0.5.1"
     }
+    helm = {
+      source  = "hashicorp/helm"
+      version = "2.12.1"
+    }
   }
 }
 
-# Initiera providern
 provider "kind" {}
+
+provider "kubernetes" {
+  config_path = "~/.kube/config"
+}
+
+provider "helm" {
+  kubernetes {
+    config_path = "~/.kube/config"
+  }
+}
 
 # Här definierar vi själva Kubernetes-klustret
 resource "kind_cluster" "default" {
   name           = "mitt-devops-kluster"
-  node_image     = "kindest/node:v1.29.2" # Definierar Kubernetes-versionen
+  node_image     = "kindest/node:v1.29.2"
   wait_for_ready = true
 
-  # Vi bygger ett kluster med 1 Control Plane (Master) och 2 Workers
   kind_config {
     kind        = "Cluster"
     api_version = "kind.x-k8s.io/v1alpha4"
@@ -26,8 +37,20 @@ resource "kind_cluster" "default" {
       role = "control-plane"
     }
 
+    # Vi sätter port-mappningen på första Workern istället för Control Plane!
     node {
       role = "worker"
+      
+      extra_port_mappings {
+        container_port = 80
+        host_port      = 8080
+        protocol       = "TCP"
+      }
+      extra_port_mappings {
+        container_port = 443
+        host_port      = 8443
+        protocol       = "TCP"
+      }
     }
 
     node {
@@ -36,11 +59,8 @@ resource "kind_cluster" "default" {
   }
 }
 
-provider "kubernetes" {
-  config_path = "~/.kube/config"
-}
-
-resource "kubernetes_deployment" "app" {
+# Vår Deployment för appen
+resource "kubernetes_deployment_v1" "app" {
   metadata {
     name = "my-demo-app"
     labels = {
@@ -78,6 +98,7 @@ resource "kubernetes_deployment" "app" {
   }
 }
 
+# Nätverkskopplingen till appen
 resource "kubernetes_service" "app_service" {
   metadata {
     name = "my-demo-app-service"
@@ -95,4 +116,57 @@ resource "kubernetes_service" "app_service" {
 
     type = "ClusterIP"
   }
+}
+
+# Installera NGINX Ingress Controller via Helm (Standard NodePort-inställning för Kind)
+resource "helm_release" "nginx_ingress" {
+  name       = "ingress-nginx"
+  repository = "https://kubernetes.github.io/ingress-nginx"
+  chart      = "ingress-nginx"
+  namespace  = "ingress-nginx"
+  create_namespace = true
+
+  set {
+    name  = "controller.service.type"
+    value = "NodePort"
+  }
+
+  set {
+    name  = "controller.hostPort.enabled"
+    value = "true"
+  }
+
+  depends_on = [kind_cluster.default]
+}
+
+# Regeln som lyssnar efter din lokala domän
+resource "kubernetes_ingress_v1" "app_ingress" {
+  metadata {
+    name = "my-demo-app-ingress"
+    annotations = {
+      "kubernetes.io/ingress.class" = "nginx"
+    }
+  }
+
+  spec {
+    rule {
+      host = "my-demo-app.local"
+      http {
+        path {
+          path = "/"
+          path_type = "Prefix"
+          backend {
+            service {
+              name = "my-demo-app-service"
+              port {
+                number = 80
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  depends_on = [helm_release.nginx_ingress]
 }
