@@ -35,3 +35,64 @@ resource "kind_cluster" "default" {
     }
   }
 }
+
+provider "kubernetes" {
+  config_path = "~/.kube/config"
+}
+
+resource "kubernetes_deployment" "app" {
+  metadata {
+    name = "my-demo-app"
+    labels = {
+      app = "my-demo-app"
+    }
+  }
+
+  spec {
+    replicas = 2
+
+    selector {
+      match_labels = {
+        app = "my-demo-app"
+      }
+    }
+
+    template {
+      metadata {
+        labels = {
+          app = "my-demo-app"
+        }
+      }
+
+      spec {
+        container {
+          image = "ghcr.io/bobilob/my-demo-app:latest"
+          name  = "web"
+
+          port {
+            container_port = 8080
+          }
+        }
+      }
+    }
+  }
+}
+
+resource "kubernetes_service" "app_service" {
+  metadata {
+    name = "my-demo-app-service"
+  }
+
+  spec {
+    selector = {
+      app = "my-demo-app"
+    }
+
+    port {
+      port        = 80
+      target_port = 8080
+    }
+
+    type = "ClusterIP"
+  }
+}
